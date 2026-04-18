@@ -10,12 +10,6 @@ public class InMemoryDatabase(
     LruMemoryStore<Player, Guid> playersDb,
     LruMemoryStoreManualCreated<Challenge, int> challenges) : ISingletonDependency
 {
-    private IEnumerable<KeyValuePair<int, Challenge>> OpenChallenges =>
-        challenges.GetAllWithKeys().Where(t => t.Value is not AcceptedChallenge);
-    
-    private IEnumerable<KeyValuePair<int, Challenge>> OnGoingChallenges =>
-        challenges.GetAllWithKeys().Where(t => t.Value is AcceptedChallenge);
-
     public Player GetOrAddPlayer(Guid id)
     {
         return playersDb.GetOrAdd(id);
@@ -23,28 +17,32 @@ public class InMemoryDatabase(
 
     public IReadOnlyCollection<KeyValuePair<int, Challenge>> GetPublicOpenChallenges()
     {
-        return OpenChallenges
-            .Where(t => t.Value.Permission == ChallengePermission.Public)
+        return challenges
+            .GetAllWithKeys()
+            .Where(t => t.Value is not AcceptedChallenge && t.Value.Permission == ChallengePermission.Public)
             .ToArray();
     }
     
     public IReadOnlyCollection<KeyValuePair<int, Challenge>> GetOnGoingOpenChallenges()
     {
-        return OnGoingChallenges
-            .Where(t => t.Value.Permission == ChallengePermission.Public)
+        return challenges
+            .GetAllWithKeys()
+            .Where(t => t.Value is AcceptedChallenge && t.Value.Permission == ChallengePermission.Public)
             .ToArray();
     }
     
     public int? GetMyOpenChallenge(Guid playerId)
     {
-        if (OpenChallenges.All(t => t.Value.Creator.Id != playerId))
+        var myChallenge = challenges
+            .GetAllWithKeys()
+            .FirstOrDefault(t => t.Value is not AcceptedChallenge && t.Value.Creator.Id == playerId);
+
+        if (myChallenge.Value == null)
         {
             return null;
         }
-        
-        return OpenChallenges
-            .FirstOrDefault(t => t.Value.Creator.Id == playerId)
-            .Key;
+
+        return myChallenge.Key;
     }
     
     public Challenge? GetChallenge(int id)
@@ -89,14 +87,11 @@ public class InMemoryDatabase(
     
     public int? GetFirstPublicChallengeKey()
     {
-        if (OpenChallenges.All(t => t.Value.Permission != ChallengePermission.Public))
-        {
-            return null;
-        }
-        
-        return OpenChallenges
-            .FirstOrDefault(t => t.Value.Permission == ChallengePermission.Public)
-            .Key;
+        var challenge = challenges
+            .GetAllWithKeys()
+            .FirstOrDefault(t => t.Value is not AcceptedChallenge && t.Value.Permission == ChallengePermission.Public);
+
+        return challenge.Value == null ? null : challenge.Key;
     }
     
     public void DeleteChallenge(int id)
