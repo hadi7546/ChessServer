@@ -10,18 +10,20 @@ namespace Aiursoft.ChessServer;
 
 public class Startup : IWebStartup
 {
+    private static readonly Random NickNameRandom = new();
+
     public void ConfigureServices(IConfiguration configuration, IWebHostEnvironment environment, IServiceCollection services)
     {
         services.AddLibraryDependencies();
 
         services.AddLruMemoryStore<Player, Guid>(
-            id => new Player(id) { NickName = "Anonymous " + new Random().Next(1000, 9999) },
+            id => new Player(id) { NickName = $"Anonymous {NickNameRandom.Next(1000, 9999)}" },
             maxCachedItemsCount: 1024);
         
         services.AddLruMemoryStoreManualCreate<Challenge, int>(
             maxCachedItemsCount: 256);
 
-        services.AddTransient<ChessEngine>();
+        services.AddSingleton<ChessEngine>();
         
         services
             .AddControllersWithViews()

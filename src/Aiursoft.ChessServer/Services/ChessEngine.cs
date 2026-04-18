@@ -6,7 +6,8 @@ namespace Aiursoft.ChessServer.Services;
 
 public class ChessEngine
 {
-    private readonly Engine _engine;
+    private readonly Lazy<Engine> _engine;
+    private readonly object _engineLock = new();
 
     public ChessEngine()
     {
@@ -15,7 +16,7 @@ public class ChessEngine
             SingleReader = true,
             SingleWriter = true
         });
-        _engine = new Engine(channel.Writer);
+        _engine = new Lazy<Engine>(() => new Engine(channel.Writer));
     }
     
     public string GetComputerName(int difficulty)
@@ -36,11 +37,15 @@ public class ChessEngine
 
     public string GetBestMove(string fen, int difficulty)
     {
-        _engine.AdjustPosition($"position fen {fen}");
-        var positionClone = new Position(_engine.Game.CurrentPosition);
+        lock (_engineLock)
+        {
+            var engine = _engine.Value;
+            engine.AdjustPosition($"position fen {fen}");
+            var positionClone = new Position(engine.Game.CurrentPosition);
 
-        return _engine.BestMove(new($"go depth {difficulty}"))
-            .BestMove
-            .ToEPDString(positionClone);
+            return engine.BestMove(new($"go depth {difficulty}"))
+                .BestMove
+                .ToEPDString(positionClone);
+        }
     }
 }

@@ -1,5 +1,4 @@
 using Aiursoft.AiurObserver;
-using Aiursoft.AiurObserver.WebSocket;
 using Aiursoft.ChessServer.Data;
 using Aiursoft.ChessServer.Models;
 using Aiursoft.CSTools.Services;
@@ -41,44 +40,63 @@ public class PveController(
         
         // Let the computer accept the challenge
         await database.PatchChallengeAsAcceptedAsync(challengeId, computerId);
-        
-        // Let computer respond to the player's move
-        await Task.Factory.StartNew(async () =>
+
+        var acceptedChallenge = database.GetAcceptedChallenge(challengeId);
+        if (acceptedChallenge == null)
         {
-            ISubscription? subscription = null;
+            return RedirectToAction(nameof(GamesController.GetHtml), "Games", new { id = challengeId });
+        }
+        
+        // Let computer respond to the player's move.
+        var moveLock = new SemaphoreSlim(1, 1);
+        ISubscription? subscription = null;
+        subscription = acceptedChallenge.Game.FenChangedChannel.Subscribe(async fen =>
+        {
             try
             {
-                var webSocketSchema = HttpContext.Request.Scheme == "https" ? "wss" : "ws";
-                var webSocketEndpoint =
-                    $"{webSocketSchema}://{HttpContext.Request.Host}/games/{challengeId}.ws?playerId={computerId}";
-                
-                // TODO: Refactor required. Currently, PVE, the computer is also a WebSocket client connecting to localhost.
-                // This is not a good practice. The computer should be a WebSocket server that listens to the game's WebSocket.
-                // Because currently, if the user dropped, the computer will not know and will keep calculating the best move.
-                var client = await webSocketEndpoint.ConnectAsWebSocketServer();
-                subscription = client.Subscribe(async fen =>
+                if (ChessBoard.LoadFromFen(fen).Turn != PieceColor.Black)
                 {
-                    logger.LogInformation("Computer player received fen: {fen}", fen);
-                    
-                    // When fen changes, it means someone has made a move. If it's the computer's turn, let the computer respond.
-                    if (ChessBoard.LoadFromFen(fen).Turn == PieceColor.Black)
+                    return;
+                }
+
+                await moveLock.WaitAsync();
+                try
+                {
+                    logger.LogInformation("The fen {fen} means it's the computer's turn. Computer is calculating the best move.", fen);
+                    // Wait for the UI to update
+                    await Task.Delay(300);
+                    var bestMove = engine.GetBestMove(fen, difficulty);
+
+                    lock (acceptedChallenge.Game.MovePieceLock)
                     {
-                        logger.LogInformation("The fen {fen} means it's the computer's turn. Computer is calculating the best move.", fen);
-                        // Wait for the UI to update
-                        await Task.Delay(300);
-                        var bestMove = engine.GetBestMove(fen, difficulty);
-                        
-                        logger.LogInformation("Computer calculated the best move: {bestMove}", bestMove);
-                        await client.Send(bestMove);
+                        if (!acceptedChallenge.Game.Board.IsEndGame && acceptedChallenge.Game.Board.IsValidMove(bestMove))
+                        {
+                            acceptedChallenge.Game.Board.Move(bestMove);
+                        }
                     }
-                });
-                await client.Listen();
+
+                    logger.LogInformation("Computer calculated the best move: {bestMove}", bestMove);
+                    await acceptedChallenge.Game.FenChangedChannel.BroadcastAsync(acceptedChallenge.Game.Board.ToFen());
+                }
+                finally
+                {
+                    moveLock.Release();
+                }
+
+                if (acceptedChallenge.Game.Board.IsEndGame)
+                {
+                    subscription?.Unsubscribe();
+                }
             }
-            finally
+            catch (Exception ex)
             {
-                subscription?.Unsubscribe();
-                logger.LogInformation("Computer player unsubscribed.");
+                logger.LogWarning(ex, "Computer player failed to process a move for challenge {challengeId}.", challengeId);
             }
+        });
+
+        _ = Task.Run(async () =>
+        {
+            await acceptedChallenge.Game.FenChangedChannel.BroadcastAsync(acceptedChallenge.Game.Board.ToFen());
         });
         
         // Redirect to the game page
